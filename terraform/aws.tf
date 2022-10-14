@@ -1,19 +1,4 @@
-# Global Configuration
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 4.24.0"
-    }
-    archive = {
-      source  = "hashicorp/archive"
-      version = "~> 2.2.0"
-    }
-  }
-
-  required_version = "~> 1.0"
-}
-
+# Providers
 provider "aws" {
   region = var.aws_region
 }
@@ -409,12 +394,6 @@ resource "aws_s3_bucket_object" "manifest_upload" {
   etag    = filemd5("resources/manifest.json")
 }
 
-# This is a placeholder to be replaced once we will have the full IAM config so we can use groups. 
-# Get the user arn that created the Quicksight to give him the right to see the created DataSource.
-data "external" "policy_document" {
-  program = ["bash", "${path.module}/resources/GetQuicksightUserArn.sh", var.aws_region, data.aws_caller_identity.current.id]
-}
-
 # Creating the DataSource
 resource "aws_quicksight_data_source" "default" {
   data_source_id = "CSPM-Dashboard"
@@ -436,7 +415,7 @@ resource "aws_quicksight_data_source" "default" {
       "quicksight:DescribeDataSourcePermissions",
       "quicksight:PassDataSource",
     ]
-    principal = data.external.policy_document.result.arn
+    principal = "arn:aws:quicksight:ca-central-1:${data.aws_caller_identity.current.id}:user/default/BCGOV_CORE_Quicksight_admin/${var.admin_list[0]}"
   }
 }
 
@@ -501,4 +480,253 @@ resource "aws_iam_role_policy_attachment" "Cloudguard_quicksight_default_access_
 resource "aws_iam_role_policy_attachment" "Cloudguard_quicksight_s3_access_rights" {
   role       = aws_iam_role.quicksight_service_role.name
   policy_arn = resource.aws_iam_policy.cloudguard_quicksight_s3_policy.arn
+}
+
+################
+## SSO Config ##
+################
+
+# Quicksight reader access role
+resource "aws_iam_role" "quicksight_reader_role" {
+  name                 = "BCGOV_CORE_Quicksight_reader"
+  max_session_duration = 21600
+
+  assume_role_policy = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::${data.aws_caller_identity.current.account_id}:saml-provider/BCGovKeyCloak-${var.kc_realm}"
+            },
+            "Action": "sts:AssumeRoleWithSAML",
+            "Condition": {
+                "StringEquals": {
+                    "SAML:aud": [
+                        "https://signin.aws.amazon.com/saml",
+                        "${var.lz_portal_cloudfront_url}"
+                    ]
+                }
+            }
+        }
+    ]
+}
+EOF
+}
+
+# Quicksight author access role
+resource "aws_iam_role" "quicksight_author_role" {
+  name                 = "BCGOV_CORE_Quicksight_author"
+  max_session_duration = 21600
+
+  assume_role_policy = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::${data.aws_caller_identity.current.account_id}:saml-provider/BCGovKeyCloak-${var.kc_realm}"
+            },
+            "Action": "sts:AssumeRoleWithSAML",
+            "Condition": {
+                "StringEquals": {
+                    "SAML:aud": [
+                        "https://signin.aws.amazon.com/saml",
+                        "${var.lz_portal_cloudfront_url}"
+                    ]
+                }
+            }
+        }
+    ]
+}
+EOF
+}
+
+resource "aws_iam_role" "quicksight_admin_role" {
+  name                 = "BCGOV_CORE_Quicksight_admin"
+  max_session_duration = 21600
+
+  assume_role_policy = <<EOF
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Effect": "Allow",
+            "Principal": {
+                "Federated": "arn:aws:iam::${data.aws_caller_identity.current.account_id}:saml-provider/BCGovKeyCloak-${var.kc_realm}"
+            },
+            "Action": "sts:AssumeRoleWithSAML",
+            "Condition": {
+                "StringEquals": {
+                    "SAML:aud": [
+                        "https://signin.aws.amazon.com/saml",
+                        "${var.lz_portal_cloudfront_url}"
+                    ]
+                }
+            }
+        }
+    ]
+}
+EOF
+}
+
+# Quicksight reader access policy
+resource "aws_iam_policy" "quicksight_reader_access_policy" {
+  name = "QuicksightReaderAccess"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow",
+        Resource = "*",
+        Action = [
+          "quicksight:DescribeDashboard",
+          "quicksight:ListAnalyses",
+          "quicksight:ListDashboards",
+          "quicksight:CreateReader",
+          "quicksight:SearchDashboards",
+          "quicksight:DescribeUser",
+          "quicksight:SearchAnalyses"
+        ]
+      }
+    ]
+  })
+}
+
+# Quicksight author access policy
+resource "aws_iam_policy" "quicksight_author_access_policy" {
+  name = "QuicksightAuthorAccess"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow",
+        Resource = "*",
+        Action = [
+          "quicksight:DescribeDashboard",
+          "quicksight:ListAnalyses",
+          "quicksight:ListDashboards",
+          "quicksight:CreateUser",
+          "quicksight:SearchDashboards",
+          "quicksight:DescribeUser",
+          "quicksight:SearchAnalyses"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_policy" "quicksight_admin_access_policy" {
+  name = "QuicksightAdminAccess"
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow",
+        Resource = "*",
+        Action   = "quicksight:*"
+      }
+    ]
+  })
+}
+
+# Quicksight access Policies attachment
+resource "aws_iam_role_policy_attachment" "quicksight_reader_access" {
+  role       = aws_iam_role.quicksight_reader_role.name
+  policy_arn = aws_iam_policy.quicksight_reader_access_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "quicksight_author_access" {
+  role       = aws_iam_role.quicksight_author_role.name
+  policy_arn = aws_iam_policy.quicksight_author_access_policy.arn
+}
+
+resource "aws_iam_role_policy_attachment" "quicksight_admin_access" {
+  role       = aws_iam_role.quicksight_admin_role.name
+  policy_arn = aws_iam_policy.quicksight_admin_access_policy.arn
+}
+
+# Quicksight users creation
+
+resource "aws_quicksight_user" "readers" {
+  for_each      = toset(var.reader_list)
+  session_name  = each.key
+  email         = data.keycloak_user.this[each.key].email
+  namespace     = "default"
+  identity_type = "IAM"
+  iam_arn       = aws_iam_role.quicksight_reader_role.arn
+  user_role     = "READER"
+}
+
+resource "aws_quicksight_user" "authors" {
+  for_each      = toset(var.author_list)
+  session_name  = each.key
+  email         = data.keycloak_user.this[each.key].email
+  namespace     = "default"
+  identity_type = "IAM"
+  iam_arn       = aws_iam_role.quicksight_author_role.arn
+  user_role     = "AUTHOR"
+}
+
+resource "aws_quicksight_user" "admins" {
+  for_each      = toset(var.admin_list)
+  session_name  = each.key
+  email         = data.keycloak_user.this[each.key].email
+  namespace     = "default"
+  identity_type = "IAM"
+  iam_arn       = aws_iam_role.quicksight_admin_role.arn
+  user_role     = "ADMIN"
+}
+
+# Quicksight groups creation
+resource "aws_quicksight_group" "reader" {
+  group_name = "readers"
+  description = "This group for the reader is not really used because user can directly access the public CSPM Dashboard"
+}
+
+resource "aws_quicksight_group" "author" {
+  group_name = "authors"
+  description = "Group link with the CSPM Dashboard; need to be linked on the first execution"
+}
+
+resource "aws_quicksight_group" "admin" {
+  group_name = "admins"
+  description = "Group link with the CSPM Dashboard; need to be linked on the first execution"
+}
+
+# Quicksight user group maping
+
+resource "aws_quicksight_group_membership" "readers" {
+  for_each    = toset(var.reader_list)
+  group_name  = "readers"
+  member_name = "${aws_iam_role.quicksight_reader_role.name}/${each.key}"
+
+  depends_on = [
+    aws_quicksight_user.readers,
+    aws_quicksight_group.reader
+  ]
+}
+
+resource "aws_quicksight_group_membership" "authors" {
+  for_each    = toset(var.author_list)
+  group_name  = "authors"
+  member_name = "${aws_iam_role.quicksight_author_role.name}/${each.key}"
+
+  depends_on = [
+    aws_quicksight_user.authors,
+    aws_quicksight_group.author
+  ]
+}
+
+resource "aws_quicksight_group_membership" "admins" {
+  for_each    = toset(var.admin_list)
+  group_name  = "admins"
+  member_name = "${aws_iam_role.quicksight_admin_role.name}/${each.key}"
+
+  depends_on = [
+    aws_quicksight_user.admins,
+    aws_quicksight_group.admin
+  ]
 }
